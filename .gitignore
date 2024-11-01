@@ -1,0 +1,6 @@
+.vscode
+*screenshots
+logs/**
+venv/**
+*.pyc
+aggregated_code.txt
