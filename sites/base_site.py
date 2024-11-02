@@ -1,22 +1,33 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+import json
+from typing import Dict, List, Optional
 from httpcore import TimeoutException
+from loguru import logger
 from selenium import webdriver
 from core.exceptions import ApplicationException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from AI import choose_option, get_result
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import (
+    TimeoutException,
+    ElementClickInterceptedException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
 
 
 class BaseSite(ABC):
     def __init__(self, driver: webdriver.Firefox):
+        self.login_required = False
         self.driver = driver
         self.credentials = None
+        self.site_type = None
         self.wait = WebDriverWait(driver, 30)
+        self.login_required = True
 
     @abstractmethod
-    def login(self, credentials: Dict[str, str]) -> None:
+    def login(self) -> None:
         """Login to the job site"""
         pass
 
@@ -108,4 +119,66 @@ class BaseSite(ABC):
         return choose_option(question, options=None)
 
     def get_match_report(self, description):
-        return get_result(description, self.site_type)
+        try:
+            result = get_result(description, self.site_type)
+            if result["matching_percent"]:
+                return result
+        except Exception as e:
+            logger.error(f"Error getting match report for {self.site_type}: {str(e)}")
+
+    def _get_element(self, by: By, selector: str, timeout: int = 10) -> Optional[any]:
+        """Safe element getter with wait"""
+        try:
+            return self.wait.until(EC.presence_of_element_located((by, selector)))
+        except TimeoutException:
+            return None
+
+    def _get_elements(self, by: By, selector: str) -> List[any]:
+        """Safe multiple elements getter"""
+        return self.driver.find_elements(by, selector)
+
+    def _safe_click(self, element) -> bool:
+        """Safely click an element with multiple attempts"""
+        try:
+            element.click()
+            return True
+        except ElementClickInterceptedException:
+            try:
+                self.driver.execute_script("arguments[0].click();", element)
+                return True
+            except Exception as e:
+                logger.error(f"Failed to click element: {str(e)}")
+                return False
+
+    def get_cookies(self) -> Optional[List[Dict]]:
+        """Get stored cookies"""
+        try:
+            with open(self.COOKIE_FILE, "r") as file:
+                return json.load(file).get(self.site_type, None)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def save_cookies(self) -> None:
+        """Save current cookies"""
+        try:
+            with open(self.COOKIE_FILE, "r") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+
+        data[self.site_type] = self.driver.get_cookies()
+
+        with open(self.COOKIE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def add_cookies(self):
+        """Add a cookie to the browser"""
+        cookies = self.get_cookies()
+        if cookies:
+            for cookie in cookies:
+                self.driver.add_cookie(cookie)
+            self.driver.refresh()
+            if self.is_logged_in():
+                return True
+            else:
+                return False

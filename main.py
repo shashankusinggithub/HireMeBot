@@ -40,10 +40,10 @@ def main():
         url_processor = URLProcessor(site_handlers)
 
         # Add jobs to queue
-        job_queue.add_url(
-            "https://jobs.careers.microsoft.com/global/en/job/1778451/Software-Engineerr"
-        )
-        # job_queue.add_url("https://careers.microsoft.com/job/123456")
+        # job_queue.add_url(
+        #     "microsoft.com"
+        # )
+        job_queue.add_url("linkedin.com")
 
         # Optional: Add jobs from file
         # job_queue.add_urls_from_file("job_urls.txt")
@@ -52,7 +52,6 @@ def main():
         while not job_queue.is_empty():
             url = job_queue.get_next_url()
             try:
-                driver.get(url)
                 url_processor.process_url(url, credentials)
             except Exception as e:
                 logger.error(f"Error processing {url}: {str(e)}")

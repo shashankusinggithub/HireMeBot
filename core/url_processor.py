@@ -10,7 +10,7 @@ class URLProcessor:
 
     def get_site_type(self, url: str) -> str:
         """Determine the site type from URL"""
-        domain = urlparse(url).netloc.lower()
+        domain = url
 
         if "linkedin.com" in domain:
             return "linkedin"
@@ -33,8 +33,9 @@ class URLProcessor:
 
             # Login if needed
 
-            # if not handler.is_logged_in():
-            #     handler.login(credentials[site_type])
+            if not handler.is_logged_in() and handler.login_required:
+                logger.info(f"Logging in to {handler.site_type}")
+                handler.login()
 
             # Apply to job
             handler.apply_to_job(url)
