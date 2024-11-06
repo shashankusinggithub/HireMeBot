@@ -6,6 +6,8 @@ import json
 from json_repair import repair_json
 import os
 
+from loguru import logger
+
 
 class BaseLLMProvider(ABC):
     def __init__(self):
@@ -44,7 +46,7 @@ class BaseLLMProvider(ABC):
             ResponseSchema(
                 name="answers",
                 description="list of answers for questions provided",
-                type="list",
+                type="List[string]",
             )
         ]
 
@@ -59,12 +61,15 @@ class BaseLLMProvider(ABC):
         self.match_prompt = PromptTemplate(
             template="""Provide a matching percentage for {my_resume} and {job_description} for {company} in JSON format.
             
+            Output:
+            ```json
             {format_instructions}
-            
+            ```
             Please ensure the review includes:
             - Match percentage of my_resume and job_description
             - Respond should be parsable JSON.
             - No other information is required.
+            - Just respond with json containing "matching_percent"
             
             Return the response in valid JSON format.""",
             input_variables=["my_resume", "job_description", "company"],
@@ -75,10 +80,9 @@ class BaseLLMProvider(ABC):
 
         self.get_answers_prompt = PromptTemplate(
             template="""You are a human being and a software developer applying job online. Always answer like a human being
-            Output:
-            ```json
+            Output:     
             {format_instructions}
-            ```
+    
             questions:
              ```json
             {questions}
@@ -136,7 +140,7 @@ class BaseLLMProvider(ABC):
                 if parsed_response.get("matching_percent"):
                     return parsed_response
             except Exception as e:
-                print(f"Error: {e}")
+                logger.error(f"Response: {response}, Error : {e}")
         return None
 
     def get_answers(self, questions: str, options: List[dict] = None) -> Optional[dict]:

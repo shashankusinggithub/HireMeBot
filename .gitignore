@@ -5,3 +5,6 @@ venv/**
 *.pyc
 aggregated_code.txt
 .env
+data/resume.json
+testing.ipynb
+testing.py

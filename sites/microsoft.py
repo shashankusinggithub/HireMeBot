@@ -128,28 +128,28 @@ class MicrosoftSite(BaseSite):
 
     def _handle_questions(self, form_element) -> None:
         """Handle application form questions"""
-        rows = form_element.find_elements(
+        rows = form_element._get_elements(
             By.CSS_SELECTOR,
             f'div[class="{self.selectors.APPLICATION["questions"]["row"]} "]',
         )
 
         for row in rows:
-            question = row.find_element(
+            question = row._get_element(
                 By.TAG_NAME, self.selectors.APPLICATION["questions"]["label"]
             ).text
 
             # Handle different input types
-            if select := row.find_elements(
+            if select := row._get_elements(
                 By.TAG_NAME, self.selectors.APPLICATION["questions"]["select"]
             ):
                 Select(select[0]).select_by_value("Yes")
-            elif textarea := row.find_elements(
+            elif textarea := row._get_elements(
                 By.TAG_NAME, self.selectors.APPLICATION["questions"]["textarea"]
             ):
                 answer = self.get_answers([{"question": question, "type": "text"}])
                 if answer:
                     textarea[0].send_keys(answer.get("answers", ["yes i do"])[0])
-            elif checkbox := row.find_elements(
+            elif checkbox := row._get_elements(
                 By.CSS_SELECTOR, self.selectors.APPLICATION["questions"]["checkbox"]
             ):
                 for box in checkbox:
@@ -199,7 +199,7 @@ class MicrosoftSite(BaseSite):
             )
             for job in jobs:
                 try:
-                    job_link = job.find_element(By.TAG_NAME, "button")
+                    job_link = job._get_element(By.TAG_NAME, "button")
                     if self._safe_click(job_link):
                         self.wait_for_page_load()
 
@@ -219,9 +219,9 @@ class MicrosoftSite(BaseSite):
                 By.CLASS_NAME, self.selectors.JOB_SEARCH["description"]
             )
             if description:
-                match = self.get_match_report(description.text)["matching_percent"]
-                match = int(match.replace("%", "")) if match else 0
-                return match > 70
+                match = self.get_match_report(description.text)
+                if "matching_percent" in match:
+                    return True
         except Exception as e:
             logger.error(f"Failed to check job match: {str(e)}")
         return False
@@ -348,19 +348,19 @@ class MicrosoftSite(BaseSite):
                     if question_divs:
                         for div in question_divs:
                             try:
-                                question = div.find_element(By.TAG_NAME, "label").text
+                                question = div._get_element(By.TAG_NAME, "label").text
 
                                 # Handle different input types
-                                select_elements = div.find_elements(
+                                select_elements = div._get_elements(
                                     By.TAG_NAME, "select"
                                 )
-                                text_areas = div.find_elements(By.TAG_NAME, "textarea")
-                                checkboxes = div.find_elements(
+                                text_areas = div._get_elements(By.TAG_NAME, "textarea")
+                                checkboxes = div._get_elements(
                                     By.CSS_SELECTOR, "input[type='checkbox']"
                                 )
 
                                 if select_elements:
-                                    options = div.find_elements(By.TAG_NAME, "option")
+                                    options = div._get_elements(By.TAG_NAME, "option")
                                     clean_options = [
                                         opt.get_attribute("value")
                                         for opt in options

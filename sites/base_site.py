@@ -26,7 +26,7 @@ class BaseSite(ABC):
         self.driver = driver
         self.credentials = None
         self.site_type = None
-        self.wait = WebDriverWait(driver, 2)
+        self.wait = WebDriverWait(driver, 0.5)
         self.login_required = True
         self.questions = []
         self.response_data = {}
@@ -66,7 +66,7 @@ class BaseSite(ABC):
                 self.wait_for_network_idle(timeout)
 
             # Wait for common loading indicators to disappear
-            self.wait_for_loading_elements(timeout)
+            # self.wait_for_loading_elements(timeout)
 
             return True
 
@@ -128,12 +128,16 @@ class BaseSite(ABC):
     def get_match_report(self, description):
         try:
             result = get_result(description, self.site_type)
-            if result["matching_percent"]:
-                return result
+            if "matching_percent" in result:
+                result["matching_percent"] = int(
+                    str(result["matching_percent"]).replace("%", "")
+                )
+
+                return result if result["matching_percent"] > 75 else None
         except Exception as e:
             logger.error(f"Error getting match report for {self.site_type}: {str(e)}")
 
-    def _get_element(self, by: By, selector: str, timeout: int = 1) -> Optional[any]:
+    def _get_element(self, by: By, selector: str, timeout: int = 0.5) -> Optional[any]:
         """Safe element getter with wait"""
         try:
             element = WebDriverWait(self.driver, timeout).until(
@@ -151,10 +155,12 @@ class BaseSite(ABC):
 
     def _safe_click(self, element) -> bool:
         """Safely click an element with multiple attempts"""
+        if not element:
+            return True
         try:
             element.click()
             return True
-        except ElementClickInterceptedException:
+        except ElementClickInterceptedException as e:
             try:
                 self.driver.execute_script("arguments[0].click();", element)
                 return True
@@ -218,7 +224,7 @@ class WebElementMod(WebElement):
         self.wait = WebDriverWait(self, 2)
 
     def _get_element(
-        self, by: By, selector: str, timeout: int = 1
+        self, by: By, selector: str, timeout: int = 0.5
     ) -> Optional["WebElementMod"]:
         """Safe element getter with wait"""
         try:
@@ -227,10 +233,12 @@ class WebElementMod(WebElement):
             )
             return WebElementMod(element)
         except TimeoutException as e:
-            logger.error(f"Failed to get element {selector}: {str(e)}")
             return None
 
     def _get_elements(self, by: By, selector: str) -> List["WebElementMod"]:
         """Safe multiple elements getter"""
-        elements = self.find_elements(by, selector)
-        return [WebElementMod(element) for element in elements]
+        try:
+            elements = self.find_elements(by, selector)
+            return [WebElementMod(element) for element in elements] if elements else []
+        except Exception as e:
+            return []

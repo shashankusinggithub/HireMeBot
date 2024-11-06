@@ -19,7 +19,7 @@ llm = LLMProviderFactory.create_provider(
 )
 ollama_llm = LLMProviderFactory.create_provider(
     provider_type="ollama",
-    model_name="llama3.2",
+    model_name="gemma2",
 )
 
 

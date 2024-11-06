@@ -1,3 +1,4 @@
+import datetime
 import json
 import time
 from typing import Optional, Generator
@@ -6,6 +7,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
+    ElementClickInterceptedException,
 )
 from .base_site import BaseSite, WebElementMod
 from core.exceptions import ApplicationException
@@ -114,22 +116,32 @@ class LinkedInSite(BaseSite):
                 if easy_apply_div := self._get_element(
                     By.CLASS_NAME, self.selectors.APPLICATION["easy_apply_div"]
                 ):
-                    if easy_apply_btn := easy_apply_div.find_element(
+                    if easy_apply_btn := easy_apply_div._get_element(
                         By.TAG_NAME, "button"
                     ):
                         self._safe_click(easy_apply_btn)
                         self._get_form_fields(checking=True)
-                        self.get_answers()
-                        self._get_form_fields()
-
-                        if close_button := self._get_element(
-                            By.CSS_SELECTOR, self.selectors.APPLICATION["close_btn"]
-                        ):
-                            self._safe_click(close_button)
+                        if self.questions:
+                            self.get_answers()
+                            self._get_form_fields()
 
             except Exception as e:
                 logger.error(f"Error applying to job: {str(e)}")
             finally:
+                try:
+                    if close_button := self._get_element(
+                        By.CSS_SELECTOR, self.selectors.APPLICATION["close_btn"]
+                    ):
+                        close_button.click()
+                except ElementClickInterceptedException:
+                    self._safe_click(close_button)
+                except Exception as e:
+                    logger.info("Unable to close the modal")
+
+                if modal := self._get_element(
+                    By.CSS_SELECTOR, self.selectors.APPLICATION["form"]["modal"]
+                ):
+                    self.driver.refresh()
                 self.response_data = {}
 
     def get_all_jobs(self, job_url: str) -> Generator:
@@ -174,7 +186,7 @@ class LinkedInSite(BaseSite):
         """Process a single job card"""
         try:
             self.driver.execute_script("arguments[0].scrollIntoView();", card)
-            job_card = card.find_element(
+            job_card = card._get_element(
                 By.CLASS_NAME, self.selectors.APPLICATION["job_card"]
             )
 
@@ -183,26 +195,25 @@ class LinkedInSite(BaseSite):
 
             self._safe_click(job_card)
             self.wait_for_page_load()
-            time.sleep(3)
 
             if not (
-                job_description := self.driver.find_element(
-                    By.TAG_NAME, self.selectors.APPLICATION["job_description"]
+                job_description := self._get_element(
+                    By.TAG_NAME, self.selectors.APPLICATION["job_description"], 5
                 )
             ):
                 return None
 
             if not (
-                easy_apply_div := self.driver.find_element(
+                easy_apply_div := self._get_element(
                     By.CLASS_NAME, self.selectors.APPLICATION["easy_apply_div"]
                 )
             ):
                 return None
 
-            match = self.get_match_report(job_description.text)["matching_percent"]
-            if not match or int(match.replace("%", "")) < 70:
+            match = self.get_match_report(job_description.text)
+            if not match:
                 return None
-
+            logger.info(f"Matching percentage is {match}%")
             return job_card
         except StaleElementReferenceException as e:
             raise StaleElementReferenceException(
@@ -218,28 +229,28 @@ class LinkedInSite(BaseSite):
 
         try:
             try:
-                question = section.find_element(By.TAG_NAME, "label").text
+                question = section._get_element(By.TAG_NAME, "label").text
             except NoSuchElementException as e:
                 question = (
-                    section.find_element(By.XPATH, "./preceding-sibling::*[2]").text
-                    + section.find_element(By.XPATH, "./preceding-sibling::*[1]").text
+                    section._get_element(By.XPATH, "./preceding-sibling::*[2]").text
+                    + section._get_element(By.XPATH, "./preceding-sibling::*[1]").text
                 )
-            if fieldsets := section.find_elements(By.TAG_NAME, "fieldset"):
+            if fieldsets := section._get_elements(By.TAG_NAME, "fieldset"):
                 try:
-                    question = section.find_element(By.TAG_NAME, "legend").text
+                    question = section._get_element(By.TAG_NAME, "legend").text
                 except NoSuchElementException as e:
                     question = (
-                        section.find_element(By.XPATH, "./preceding-sibling::*[2]").text
-                        + section.find_element(
+                        section._get_element(By.XPATH, "./preceding-sibling::*[2]").text
+                        + section._get_element(
                             By.XPATH, "./preceding-sibling::*[1]"
                         ).text
                     )
                 self._handle_fieldset_field(fieldsets[0], question)
-            elif inputs := section.find_elements(By.TAG_NAME, "input"):
+            elif inputs := section._get_elements(By.TAG_NAME, "input"):
                 self._handle_input_field(inputs[0], question)
-            elif text_boxes := section.find_elements(By.TAG_NAME, "textarea"):
+            elif text_boxes := section._get_elements(By.TAG_NAME, "textarea"):
                 self._handle_text_box_field(text_boxes[0], question)
-            elif selects := section.find_elements(By.TAG_NAME, "select"):
+            elif selects := section._get_elements(By.TAG_NAME, "select"):
                 self._handle_select_field(selects[0], question)
 
         except Exception as e:
@@ -275,11 +286,11 @@ class LinkedInSite(BaseSite):
             )
 
             # Find the parent section and look for dropdown options
-            parent_section = input_field.find_element(
+            parent_section = input_field._get_element(
                 By.XPATH,
                 "./ancestor::div[contains(@class, 'jobs-easy-apply-form-section__grouping')]",
             )
-            dropdown_options = parent_section.find_elements(
+            dropdown_options = parent_section._get_elements(
                 By.CLASS_NAME, self.selectors.APPLICATION["form"]["dropdown_options"]
             )
 
@@ -324,6 +335,12 @@ class LinkedInSite(BaseSite):
                     self._handle_autocomplete_input(input_field, "1")
                 except Exception as e:
                     input_field.send_keys(0)
+                if error := self._get_element(
+                    By.CLASS_NAME, self.selectors.APPLICATION["form"]["error"]
+                ):
+                    if "mm/dd/yyyy" in error.text:
+                        date = datetime.datetime.now().strftime("%x")
+                        input_field.send_keys(date)
                 return True
 
             if not answer_text:
@@ -348,7 +365,11 @@ class LinkedInSite(BaseSite):
                     By.CLASS_NAME, self.selectors.APPLICATION["form"]["error"]
                 ):
                     input_field.clear()
-                    if error.text:
+
+                    if "mm/dd/yyyy" in error.text:
+                        date = datetime.datetime.now().strftime("%x")
+                        input_field.send_keys(date)
+                    elif error.text:
                         input_field.send_keys(extract_numbers(answer_text))
                     else:
                         input_field.send_keys(0)
@@ -397,7 +418,7 @@ class LinkedInSite(BaseSite):
             if self.response_data and question not in self.response_data:
                 return True
 
-            options = select_field.find_elements(By.TAG_NAME, "option")
+            options = select_field._get_elements(By.TAG_NAME, "option")
             clean_options = [
                 opt.get_attribute("value")
                 for opt in options
@@ -441,7 +462,7 @@ class LinkedInSite(BaseSite):
         try:
             options = [
                 {"component": opt, "text": opt.text}
-                for opt in fieldset.find_elements(By.TAG_NAME, "label")
+                for opt in fieldset._get_elements(By.TAG_NAME, "label")
             ]
             clean_options = [opt["text"] for opt in options]
 
@@ -472,6 +493,7 @@ class LinkedInSite(BaseSite):
                             try:
                                 if option_all["text"] == value:
                                     option_all["component"].click()
+
                                     return True
 
                             except StaleElementReferenceException as e2:
@@ -499,8 +521,7 @@ class LinkedInSite(BaseSite):
                 By.CSS_SELECTOR, self.selectors.APPLICATION["form"]["modal"]
             ):
                 self.wait_for_page_load()
-                footer = modal.find_elements(By.TAG_NAME, "footer")[0]
-                while next_button := self.next_button(footer):
+                while self.next_button():
                     pb4s = modal._get_elements(By.CLASS_NAME, "pb4")
                     for pb4 in pb4s:
                         if h3 := pb4._get_element(By.TAG_NAME, "h3"):
@@ -508,17 +529,22 @@ class LinkedInSite(BaseSite):
                                 continue
                         self.wait_for_page_load()
 
-                        for section in pb4.find_elements(
+                        for section in pb4._get_elements(
                             By.CLASS_NAME, self.selectors.APPLICATION["form"]["section"]
                         ):
                             self._handle_form_section(section)
-
-                    if checking and next_button.text == "Submit application":
-                        while back_button := self.back_button(footer):
+                    next_button = self.next_button()
+                    if (
+                        checking
+                        and next_button
+                        and next_button.text == "Submit application"
+                        and self.questions
+                    ):
+                        while back_button := self.back_button():
                             self._safe_click(back_button)
 
                         return True
-                    self._safe_click(next_button)
+                    self._safe_click(self.next_button())
 
         except Exception as e:
             logger.error(f"Error filling form fields: {str(e)}")
@@ -539,7 +565,7 @@ class LinkedInSite(BaseSite):
         """Get the next button from footer or modal"""
         try:
             if footer:
-                buttons = footer.find_elements(By.TAG_NAME, "button")
+                buttons = footer._get_elements(By.TAG_NAME, "button")
                 return buttons[-1] if buttons else None
             raise StaleElementReferenceException("No footer found")
         except StaleElementReferenceException as e:
@@ -547,8 +573,10 @@ class LinkedInSite(BaseSite):
                 if modal := self._get_element(
                     By.CSS_SELECTOR, self.selectors.APPLICATION["form"]["modal"]
                 ):
-                    footer = modal.find_element(By.TAG_NAME, "footer")
-                    buttons = footer.find_elements(By.TAG_NAME, "button")
+                    footer = modal._get_element(By.TAG_NAME, "footer")
+                    if not footer:
+                        return None
+                    buttons = footer._get_elements(By.TAG_NAME, "button")
                     return buttons[-1] if buttons else None
             except Exception as e:
                 logger.error(f"{str(e)}")
@@ -563,7 +591,7 @@ class LinkedInSite(BaseSite):
         """Get the next button from footer or modal"""
         try:
             if footer:
-                buttons = footer.find_elements(By.TAG_NAME, "button")
+                buttons = footer._get_elements(By.TAG_NAME, "button")
                 return buttons[0] if len(buttons) > 1 else None
             raise StaleElementReferenceException("No footer found")
         except StaleElementReferenceException as e:
@@ -571,8 +599,8 @@ class LinkedInSite(BaseSite):
                 if modal := self._get_element(
                     By.CSS_SELECTOR, self.selectors.APPLICATION["form"]["modal"]
                 ):
-                    footer = modal.find_element(By.TAG_NAME, "footer")
-                    buttons = footer.find_elements(By.TAG_NAME, "button")
+                    footer = modal._get_element(By.TAG_NAME, "footer")
+                    buttons = footer._get_elements(By.TAG_NAME, "button")
                     return buttons[0] if len(buttons) > 1 else None
             except Exception as e:
                 logger.error(f"{str(e)}")
