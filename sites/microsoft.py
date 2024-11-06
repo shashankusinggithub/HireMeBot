@@ -9,12 +9,13 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
 )
-from .base_site import BaseSite
+from .base_site import BaseSite, WebElementMod
 from loguru import logger
 import json
 import time
 from dataclasses import dataclass
 from contextlib import contextmanager
+from utils.utilities import retry
 
 
 @dataclass
@@ -44,6 +45,7 @@ class Selectors:
             "select": "select",
             "textarea": "textarea",
             "checkbox": "input[type='checkbox']",
+            "option": "option",
         },
         "iframe": "icims_content_iframe",
         "final_submit": "input[onclick='pageDirtyFlag=false;']",
@@ -58,7 +60,6 @@ class Selectors:
 class MicrosoftSite(BaseSite):
     BASE_URL = "https://careers.microsoft.com"
     LOGIN_URL = "https://login.microsoftonline.com"
-    COOKIE_FILE = "cookie_file.json"
 
     def __init__(self, driver, wait_timeout: int = 10):
         super().__init__(driver)
@@ -74,6 +75,7 @@ class MicrosoftSite(BaseSite):
         self.driver.close()
         self.driver.switch_to.window(original_tab)
 
+    @retry()
     def linkedin_login(self) -> None:
         """Handle LinkedIn login process"""
         if not self.driver.get_cookies():
@@ -85,15 +87,13 @@ class MicrosoftSite(BaseSite):
         try:
             # Find and click LinkedIn button
             linkedin_button = self._get_element(
-                By.CSS_SELECTOR, self.selectors.LOGIN["linkedin_button"]
+                By.CSS_SELECTOR, self.selectors.LOGIN["linkedin_button"], 3
             )
             if linkedin_button:
                 self._safe_click(linkedin_button)
 
-            time.sleep(5)  # Wait for LinkedIn form
-
             # Fill credentials
-            username = self._get_element(By.ID, self.selectors.LOGIN["username"])
+            username = self._get_element(By.ID, self.selectors.LOGIN["username"], 5)
             if username:
                 username.send_keys(self.credentials["username"])
                 password = self._get_element(By.ID, self.selectors.LOGIN["password"])
@@ -102,13 +102,16 @@ class MicrosoftSite(BaseSite):
                     By.CSS_SELECTOR, self.selectors.LOGIN["submit"]
                 )
                 self._safe_click(submit)
-
-            while "resend" in self.driver.page_source.lower():
-                time.sleep(5)
-            time.sleep(5)
+                time.sleep(4)
+                while (
+                    "resend" in self.driver.page_source.lower()
+                    or "security check" in self.driver.page_source.lower()
+                ):
+                    logger.info("Waiting for LinkedIn to authorize...")
+                    time.sleep(5)
             # Handle authorization if needed
             authorize = self._get_element(
-                By.CSS_SELECTOR, self.selectors.LOGIN["authorize"]
+                By.CSS_SELECTOR, self.selectors.LOGIN["authorize"], 5
             )
             if authorize:
                 self._safe_click(authorize)
@@ -126,6 +129,7 @@ class MicrosoftSite(BaseSite):
         except Exception as e:
             logger.error(f"Failed to log in with LinkedIn: {str(e)}")
 
+    @retry()
     def _handle_questions(self, form_element) -> None:
         """Handle application form questions"""
         rows = form_element._get_elements(
@@ -134,26 +138,55 @@ class MicrosoftSite(BaseSite):
         )
 
         for row in rows:
-            question = row._get_element(
-                By.TAG_NAME, self.selectors.APPLICATION["questions"]["label"]
-            ).text
+            try:
+                question = row._get_element(
+                    By.TAG_NAME, self.selectors.APPLICATION["questions"]["label"]
+                ).text
 
-            # Handle different input types
-            if select := row._get_elements(
-                By.TAG_NAME, self.selectors.APPLICATION["questions"]["select"]
-            ):
-                Select(select[0]).select_by_value("Yes")
-            elif textarea := row._get_elements(
-                By.TAG_NAME, self.selectors.APPLICATION["questions"]["textarea"]
-            ):
-                answer = self.get_answers([{"question": question, "type": "text"}])
-                if answer:
-                    textarea[0].send_keys(answer.get("answers", ["yes i do"])[0])
-            elif checkbox := row._get_elements(
-                By.CSS_SELECTOR, self.selectors.APPLICATION["questions"]["checkbox"]
-            ):
-                for box in checkbox:
-                    box.click()
+                # Handle different input types
+                if select := row._get_element(
+                    By.TAG_NAME, self.selectors.APPLICATION["questions"]["select"]
+                ):
+                    if self.response_data:
+                        Select(select).select_by_value(
+                            self.response_data.get(question, "Yes")
+                        )
+                        continue
+
+                    options: List[WebElementMod] = select._get_elements(
+                        By.TAG_NAME, self.selectors.APPLICATION["questions"]["option"]
+                    )
+                    clean_options = [
+                        opt.get_attribute("value")
+                        for opt in options
+                        if opt.get_attribute("value")
+                    ]
+                    self.questions.append(
+                        {
+                            "question": question,
+                            "type": "options",
+                            "options": clean_options,
+                        }
+                    )
+
+                elif textarea := row._get_element(
+                    By.TAG_NAME, self.selectors.APPLICATION["questions"]["textarea"]
+                ):
+                    if self.response_data:
+                        ans = self.response_data.get(question, "Yes I do")
+                        textarea.send_keys(ans)
+                        continue
+
+                    self.questions.append({"question": question, "type": "text"})
+                elif checkbox := row._get_elements(
+                    By.CSS_SELECTOR, self.selectors.APPLICATION["questions"]["checkbox"]
+                ):
+                    for box in checkbox:
+                        box.click()
+
+                    self.questions.append({"question": question, "type": "text"})
+            except Exception as e:
+                logger.error(e)
 
     def apply_to_job(self, job_url: str) -> None:
         """Apply to a job posting"""
@@ -164,6 +197,7 @@ class MicrosoftSite(BaseSite):
                 )
                 if apply_button and not self.is_logged_in():
                     self._safe_click(apply_button)
+                    time.sleep(4)
                     self.login()
                     apply_button = self._get_element(
                         By.CSS_SELECTOR, self.selectors.APPLICATION["apply_button"]
@@ -194,12 +228,15 @@ class MicrosoftSite(BaseSite):
             job = self._get_element(
                 By.CSS_SELECTOR, self.selectors.JOB_SEARCH["list_item"], timeout=10
             )
-            jobs = self._get_elements(
+            jobs: List[WebElementMod] = self._get_elements(
                 By.CSS_SELECTOR, self.selectors.JOB_SEARCH["list_item"]
             )
             for job in jobs:
                 try:
                     job_link = job._get_element(By.TAG_NAME, "button")
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView();", job_link
+                    )
                     if self._safe_click(job_link):
                         self.wait_for_page_load()
 
@@ -215,13 +252,18 @@ class MicrosoftSite(BaseSite):
     def _should_apply_to_job(self) -> bool:
         """Determine if we should apply to this job"""
         try:
+            if self.driver.current_url in self.get_processed:
+                return False
             description = self._get_element(
                 By.CLASS_NAME, self.selectors.JOB_SEARCH["description"]
             )
             if description:
                 match = self.get_match_report(description.text)
-                if "matching_percent" in match:
+                if match and "matching_percent" in match:
                     return True
+                else:
+                    self.save_processed()
+
         except Exception as e:
             logger.error(f"Failed to check job match: {str(e)}")
         return False
@@ -265,8 +307,8 @@ class MicrosoftSite(BaseSite):
                     )
                     confirm_buttons = submit_buttons + primary_buttons
                     if confirm_buttons:
-                        return self._safe_click(confirm_buttons[-1])
-            return False
+                        self._safe_click(confirm_buttons[-1])
+            return True
         except Exception as e:
             logger.error(f"Error clicking confirm button: {str(e)}")
             return False
@@ -279,184 +321,27 @@ class MicrosoftSite(BaseSite):
         original_tab = self.driver.current_window_handle
 
         try:
-            # Switch to new tab
-            new_tabs = [
-                tab for tab in self.driver.window_handles if tab != original_tab
-            ]
-            if not new_tabs:
-                logger.error("No new tab found")
+            if not self._switch_to_application_tab(original_tab):
                 return False
 
-            self.driver.switch_to.window(new_tabs[0])
-            self.wait_for_page_load()
-            time.sleep(4)
+            job_id = self._get_job_id()
 
-            # Get job ID for tracking
-            try:
-                job_id = self.driver.current_url.split("Job_id=")[1].split("&")[0]
-            except Exception:
-                job_id = str(int(time.time()))
+            # Execute application steps in sequence
+            steps = [
+                self._handle_initial_checkmarks,
+                self._handle_authorization_questions,
+                self._handle_question_pages,
+                self._handle_iframe_questions,
+            ]
 
-            # Step 1: Handle initial checkmarks
-            try:
-                checkmarks = self._get_elements(
-                    By.CSS_SELECTOR, self.selectors.APPLICATION["checkmark"]
-                )
-                for element in checkmarks:
-                    self._safe_click(element)
-                time.sleep(4)
-                self._click_confirm_button()
-            except Exception as e:
-                logger.error(f"Error handling checkmarks: {str(e)}")
+            for step in steps:
+                if not step():
+                    logger.error(f"Failed at step: {step.__name__}")
+                    return False
+                if "linkedin" in self.driver.current_url:
+                    self.login()
 
-            # Step 2: Handle authorization questions
-            logger.info("Handling Authorization page")
-            time.sleep(4)
-            auth_questions = {
-                "isLegallyAuthorized-option": "Yes",
-                "isImmigrationBenefitEligible": "No",
-            }
-
-            try:
-                for field_id, answer in auth_questions.items():
-                    dropdown = self._get_element(By.ID, field_id)
-                    if dropdown:
-                        self._safe_click(dropdown)
-                        option = self._get_element(
-                            By.XPATH, f"//span[text()='{answer}']"
-                        )
-                        if option:
-                            self._safe_click(option)
-                self._click_confirm_button()
-            except Exception as e:
-                logger.error(f"Error handling authorization questions: {str(e)}")
-
-            # Step 3: Handle additional questions
-            time.sleep(4)
-            question_page = 0
-            while question_page < 5 and not self._get_elements(By.TAG_NAME, "iframe"):
-                try:
-                    # Check if we're on LinkedIn page
-                    if "linkedin" in self.driver.current_url:
-                        self.login()
-
-                    logger.info("Handling question page")
-                    question_divs = self._get_elements(By.CLASS_NAME, "iCIMS_TableRow")[
-                        :-1
-                    ]
-
-                    if question_divs:
-                        for div in question_divs:
-                            try:
-                                question = div._get_element(By.TAG_NAME, "label").text
-
-                                # Handle different input types
-                                select_elements = div._get_elements(
-                                    By.TAG_NAME, "select"
-                                )
-                                text_areas = div._get_elements(By.TAG_NAME, "textarea")
-                                checkboxes = div._get_elements(
-                                    By.CSS_SELECTOR, "input[type='checkbox']"
-                                )
-
-                                if select_elements:
-                                    options = div._get_elements(By.TAG_NAME, "option")
-                                    clean_options = [
-                                        opt.get_attribute("value")
-                                        for opt in options
-                                        if opt.get_attribute("value")
-                                    ]
-                                    answer = self.get_answers(
-                                        [
-                                            {
-                                                "question": question,
-                                                "type": "options",
-                                                "options": clean_options,
-                                            }
-                                        ],
-                                    )
-                                    if answer:
-                                        Select(select_elements[0]).select_by_value(
-                                            answer.get("answers", ["yes"])[0]
-                                        )
-
-                                elif text_areas:
-                                    answer = self.get_answers(
-                                        [{"question": question, "type": "text"}]
-                                    )
-                                    if answer:
-                                        text_areas[0].send_keys(
-                                            answer.get("answers", ["Yes I do"])[0]
-                                        )
-
-                                elif checkboxes:
-                                    for checkbox in checkboxes:
-                                        checkbox.click()
-
-                            except StaleElementReferenceException:
-                                continue
-
-                        self._click_confirm_button()
-
-                    # Check for final submit button
-                    final_submit = self._get_elements(
-                        By.CSS_SELECTOR, self.selectors.APPLICATION["final_submit"]
-                    )
-                    if final_submit:
-                        self._safe_click(final_submit[0])
-                        break
-
-                except Exception as e:
-                    logger.error(
-                        f"Error handling question page {question_page}: {str(e)}"
-                    )
-
-                question_page += 1
-
-            # Step 4: Handle iFrame questions if present
-            if (
-                self._get_elements(By.TAG_NAME, "iframe")
-                and "Your application has been submitted" not in self.driver.page_source
-            ):
-                try:
-                    self.driver.switch_to.frame(self.selectors.APPLICATION["iframe"])
-
-                    # Handle government employment question
-                    max_tries = 0
-                    while (
-                        "Are you currently employed by a government"
-                        in self.driver.page_source
-                        and max_tries < 5
-                    ):
-                        submit_button = self._get_element(
-                            By.XPATH, '//*[@id="quesp_form_submit_i"]'
-                        )
-                        if submit_button:
-                            self.driver.execute_script(
-                                "arguments[0].scrollIntoView();", submit_button
-                            )
-                            self._safe_click(submit_button)
-                            time.sleep(3)
-                        max_tries += 1
-
-                    if max_tries == 5:
-                        raise Exception("Error handling government question")
-
-                    # Handle final form questions
-                    form = self._get_element(By.CSS_SELECTOR, 'form[name="questions"]')
-                    if form:
-                        self._handle_questions(form)
-                        self._click_confirm_button()
-
-                except Exception as e:
-                    logger.error(f"Error handling iframe questions: {str(e)}")
-
-            # Take screenshot of completed application
-            try:
-                self.save_screenshot(job_id)
-            except Exception as e:
-                logger.error(f"Error taking screenshot: {str(e)}")
-
+            self._take_completion_screenshot(job_id)
             return True
 
         except Exception as e:
@@ -464,9 +349,210 @@ class MicrosoftSite(BaseSite):
             return False
 
         finally:
-            # Always close the application tab and return to original
+            self._return_to_original_tab(original_tab)
+
+    def _switch_to_application_tab(self, original_tab: str) -> bool:
+        """Switch to the new application tab"""
+        new_tabs = [tab for tab in self.driver.window_handles if tab != original_tab]
+        if not new_tabs:
+            logger.error("No new tab found")
+            return False
+
+        self.driver.switch_to.window(new_tabs[0])
+        self.wait_for_page_load()
+        time.sleep(4)
+        return True
+
+    def _get_job_id(self) -> str:
+        """Extract job ID from URL or generate timestamp-based ID"""
+        try:
+            return self.driver.current_url.split("Job_id=")[1].split("&")[0]
+        except Exception:
+            return str(int(time.time()))
+
+    def _handle_initial_checkmarks(self) -> bool:
+        """Handle initial checkmark selections"""
+        try:
+            checkmarks = self._get_elements(
+                By.CSS_SELECTOR, self.selectors.APPLICATION["checkmark"]
+            )
+            for element in checkmarks:
+                self._safe_click(element)
+            time.sleep(1)
+            return self._click_confirm_button()
+        except Exception as e:
+            logger.error(f"Error handling checkmarks: {str(e)}")
+            return False
+
+    @retry()
+    def _handle_authorization_questions(self) -> bool:
+        """Handle authorization page questions"""
+        logger.info("Handling Authorization page")
+        time.sleep(4)
+
+        auth_questions = {
+            "isLegallyAuthorized-option": "Yes",
+            "isImmigrationBenefitEligible": "No",
+        }
+
+        try:
+            for field_id, answer in auth_questions.items():
+                dropdown = self._get_element(By.ID, field_id)
+                if dropdown:
+                    self._safe_click(dropdown)
+                    option = self._get_element(By.XPATH, f"//span[text()='{answer}']")
+                    if option:
+                        self._safe_click(option)
+            return self._click_confirm_button()
+        except Exception as e:
+            logger.error(f"Error handling authorization questions: {str(e)}")
+            return False
+
+    @retry()
+    def _handle_question_pages(self) -> bool:
+        """Handle multiple pages of questions"""
+        time.sleep(1)
+        for page in range(5):
+            if self._get_elements(By.TAG_NAME, "iframe"):
+                return True
+
             try:
-                self.driver.close()
-                self.driver.switch_to.window(original_tab)
+                if "linkedin" in self.driver.current_url:
+                    self.login()
+
+                if not self._process_question_page():
+                    return False
+
+                # Check for final submit button
+                final_submit = self._get_elements(
+                    By.CSS_SELECTOR, self.selectors.APPLICATION["final_submit"]
+                )
+                if final_submit:
+                    return self._safe_click(final_submit[0])
+
             except Exception as e:
-                logger.error(f"Error closing application tab: {str(e)}")
+                logger.error(f"Error handling question page {page}: {str(e)}")
+                return False
+
+        return True
+
+    def _process_question_page(self) -> bool:
+        """Process a single page of questions"""
+        question_divs = self._get_elements(By.CLASS_NAME, "iCIMS_TableRow")[:-1]
+        if not question_divs:
+            return True
+
+        for div in question_divs:
+            try:
+                if not self._handle_single_question(div):
+                    return False
+            except StaleElementReferenceException:
+                continue
+
+        return self._click_confirm_button()
+
+    def _handle_single_question(self, div: WebElementMod) -> bool:
+        """Handle a single question element"""
+        question = div._get_element(By.TAG_NAME, "label").text
+
+        # Handle different input types
+        if select_elements := div._get_elements(By.TAG_NAME, "select"):
+            return self._handle_select_question(select_elements[0], question, div)
+        elif text_areas := div._get_elements(By.TAG_NAME, "textarea"):
+            return self._handle_text_question(text_areas[0], question)
+        elif checkboxes := div._get_elements(By.CSS_SELECTOR, "input[type='checkbox']"):
+            return self._handle_checkbox_question(checkboxes)
+
+        return True
+
+    def _handle_select_question(
+        self, select_element, question: str, div: WebElementMod
+    ) -> bool:
+        """Handle dropdown select questions"""
+        options = div._get_elements(By.TAG_NAME, "option")
+        clean_options = [
+            opt.get_attribute("value") for opt in options if opt.get_attribute("value")
+        ]
+        answer = self.get_answers(
+            [{"question": question, "type": "options", "options": clean_options}]
+        )
+        if answer:
+            Select(select_element).select_by_value(answer.get("answers", ["yes"])[0])
+        return True
+
+    def _handle_text_question(self, text_area, question: str) -> bool:
+        """Handle text input questions"""
+        answer = self.get_answers([{"question": question, "type": "text"}])
+        if answer:
+            text_area.send_keys(answer.get("answers", ["Yes I do"])[0])
+        return True
+
+    def _handle_checkbox_question(self, checkboxes) -> bool:
+        """Handle checkbox questions"""
+        for checkbox in checkboxes:
+            checkbox.click()
+        return True
+
+    def _handle_iframe_questions(self) -> bool:
+        """Handle questions within iFrame"""
+        if (
+            not self._get_element(By.TAG_NAME, "iframe", 10)
+            or "Your application has been submitted" in self.driver.page_source
+        ):
+            return True
+
+        try:
+            self.driver.switch_to.frame(self.selectors.APPLICATION["iframe"])
+
+            if not self._handle_government_question():
+                return False
+
+            form = self._get_element(By.CSS_SELECTOR, 'form[name="questions"]', 10)
+            if form:
+                self._handle_questions(form)
+                if self.questions:
+                    self.get_answers()
+                self._handle_questions(form)
+                return self._click_confirm_button()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling iframe questions: {str(e)}")
+            return False
+
+    def _handle_government_question(self) -> bool:
+        """Handle specific government employment question"""
+        max_tries = 0
+        submit_button = self._get_element(
+            By.XPATH, '//*[@id="quesp_form_submit_i"]', 10
+        )
+        while (
+            "Are you currently employed by a government" in self.driver.page_source
+            and max_tries < 5
+        ):
+            if submit_button:
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView();", submit_button
+                )
+                self._safe_click(submit_button)
+                time.sleep(3)
+            max_tries += 1
+            time.sleep(2)
+
+        return max_tries < 5
+
+    def _take_completion_screenshot(self, job_id: str) -> None:
+        """Take screenshot of completed application"""
+        try:
+            self.save_screenshot(job_id)
+        except Exception as e:
+            logger.error(f"Error taking screenshot: {str(e)}")
+
+    def _return_to_original_tab(self, original_tab: str) -> None:
+        """Return to original tab and close application tab"""
+        try:
+            self.driver.close()
+            self.driver.switch_to.window(original_tab)
+        except Exception as e:
+            logger.error(f"Error closing application tab: {str(e)}")

@@ -54,7 +54,6 @@ class Selectors:
 class LinkedInSite(BaseSite):
     BASE_URL = "https://www.linkedin.com"
     LOGIN_URL = f"{BASE_URL}/login"
-    COOKIE_FILE = "cookie_file.json"
 
     def __init__(self, driver, wait_timeout: int = 2):
         super().__init__(driver)

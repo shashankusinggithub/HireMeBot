@@ -21,6 +21,9 @@ import os
 
 
 class BaseSite(ABC):
+    COOKIE_FILE = "data/cookie_file.json"
+    PROCESSED_FILE = "data/processed.json"
+
     def __init__(self, driver: webdriver.Firefox):
         self.login_required = False
         self.driver = driver
@@ -150,8 +153,12 @@ class BaseSite(ABC):
 
     def _get_elements(self, by: By, selector: str) -> List[any]:
         """Safe multiple elements getter"""
-        elements = self.driver.find_elements(by, selector)
-        return [WebElementMod(element) for element in elements]
+        try:
+            elements = self.driver.find_elements(by, selector)
+            return [WebElementMod(element) for element in elements]
+        except Exception as e:
+            print(f"Error getting elements {str(e)}")
+            return []
 
     def _safe_click(self, element) -> bool:
         """Safely click an element with multiple attempts"""
@@ -176,6 +183,15 @@ class BaseSite(ABC):
         except (FileNotFoundError, json.JSONDecodeError):
             return None
 
+    @property
+    def get_processed(self) -> Optional[List[Dict]]:
+        """Get stored cookies"""
+        try:
+            with open(self.PROCESSED_FILE, "r") as file:
+                return json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
     def save_cookies(self) -> None:
         """Save current cookies"""
         try:
@@ -187,6 +203,19 @@ class BaseSite(ABC):
         data[self.site_type] = self.driver.get_cookies()
 
         with open(self.COOKIE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def save_processed(self) -> None:
+        """Save current cookies"""
+        try:
+            with open(self.PROCESSED_FILE, "r") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+
+        data[self.driver.current_url] = True
+
+        with open(self.PROCESSED_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
     def add_cookies(self):
@@ -210,7 +239,7 @@ class BaseSite(ABC):
                 os.makedirs(directory)
 
             return self.driver.get_full_page_screenshot_as_file(
-                f"screenshots/linkedin/{job_id}.png"
+                f"screenshots/{self.site_type}/{job_id}.png"
             )
         except Exception as e:
             logger.error(f"Failed to take screenshot {str(e)}")
