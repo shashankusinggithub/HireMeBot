@@ -10,7 +10,7 @@ class Settings(BaseModel):
 
     # Browser settings
     BROWSER_TIMEOUT: int = 30
-    IMPLICIT_WAIT: int = 10
+    IMPLICIT_WAIT: int = 1
 
     # Queue settings
     MAX_RETRIES: int = 3

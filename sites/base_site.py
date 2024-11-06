@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Type, TypeVar
 from httpcore import TimeoutException
 from loguru import logger
 from selenium import webdriver
 from core.exceptions import ApplicationException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from AI import choose_option, get_result
+from AI import get_answers, get_result
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import (
     TimeoutException,
@@ -15,6 +15,9 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
 )
+from selenium.webdriver.remote.webelement import WebElement
+
+import os
 
 
 class BaseSite(ABC):
@@ -23,8 +26,10 @@ class BaseSite(ABC):
         self.driver = driver
         self.credentials = None
         self.site_type = None
-        self.wait = WebDriverWait(driver, 30)
+        self.wait = WebDriverWait(driver, 2)
         self.login_required = True
+        self.questions = []
+        self.response_data = {}
 
     @abstractmethod
     def login(self) -> None:
@@ -61,7 +66,7 @@ class BaseSite(ABC):
                 self.wait_for_network_idle(timeout)
 
             # Wait for common loading indicators to disappear
-            # self.wait_for_loading_elements(timeout)
+            self.wait_for_loading_elements(timeout)
 
             return True
 
@@ -115,8 +120,10 @@ class BaseSite(ABC):
             except Exception as e:
                 continue  # Continue if selector not found
 
-    def get_answer(self, question, options=None):
-        return choose_option(question, options=None)
+    def get_answers(self):
+        list_ans = get_answers(self.questions)["answers"]
+        for i, ques in enumerate(self.questions):
+            self.response_data[ques["question"]] = list_ans[i]
 
     def get_match_report(self, description):
         try:
@@ -126,16 +133,21 @@ class BaseSite(ABC):
         except Exception as e:
             logger.error(f"Error getting match report for {self.site_type}: {str(e)}")
 
-    def _get_element(self, by: By, selector: str, timeout: int = 10) -> Optional[any]:
+    def _get_element(self, by: By, selector: str, timeout: int = 1) -> Optional[any]:
         """Safe element getter with wait"""
         try:
-            return self.wait.until(EC.presence_of_element_located((by, selector)))
+            element = WebDriverWait(self.driver, timeout).until(
+                EC.presence_of_element_located((by, selector))
+            )
+            return WebElementMod(element)
+
         except TimeoutException:
             return None
 
     def _get_elements(self, by: By, selector: str) -> List[any]:
         """Safe multiple elements getter"""
-        return self.driver.find_elements(by, selector)
+        elements = self.driver.find_elements(by, selector)
+        return [WebElementMod(element) for element in elements]
 
     def _safe_click(self, element) -> bool:
         """Safely click an element with multiple attempts"""
@@ -182,3 +194,43 @@ class BaseSite(ABC):
                 return True
             else:
                 return False
+
+    def save_screenshot(self, job_id="done"):
+        """Save screenshot of the page"""
+        try:
+            directory = "screenshots/" + self.site_type
+
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+
+            return self.driver.get_full_page_screenshot_as_file(
+                f"screenshots/linkedin/{job_id}.png"
+            )
+        except Exception as e:
+            logger.error(f"Failed to take screenshot {str(e)}")
+
+
+class WebElementMod(WebElement):
+    """Web Element Mod"""
+
+    def __init__(self, element: WebElement):
+        super().__init__(parent=element._parent, id_=element._id)
+        self.wait = WebDriverWait(self, 2)
+
+    def _get_element(
+        self, by: By, selector: str, timeout: int = 1
+    ) -> Optional["WebElementMod"]:
+        """Safe element getter with wait"""
+        try:
+            element = WebDriverWait(self, timeout).until(
+                EC.presence_of_element_located((by, selector))
+            )
+            return WebElementMod(element)
+        except TimeoutException as e:
+            logger.error(f"Failed to get element {selector}: {str(e)}")
+            return None
+
+    def _get_elements(self, by: By, selector: str) -> List["WebElementMod"]:
+        """Safe multiple elements getter"""
+        elements = self.find_elements(by, selector)
+        return [WebElementMod(element) for element in elements]

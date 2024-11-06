@@ -40,15 +40,17 @@ def main():
         url_processor = URLProcessor(site_handlers)
 
         # Add jobs to queue
-        # job_queue.add_url(
-        #     "microsoft.com"
-        # )
+        # job_queue.add_url("microsoft.com")
         job_queue.add_url("linkedin.com")
+        # job_queue.add_url(
+        #     "https://www.linkedin.com/jobs/search/?currentJobId=3801964907&f_AL=true"
+        # )
 
         # Optional: Add jobs from file
         # job_queue.add_urls_from_file("job_urls.txt")
 
         # Process all URLs in queue
+        #
         while not job_queue.is_empty():
             url = job_queue.get_next_url()
             try:

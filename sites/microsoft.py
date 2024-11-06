@@ -64,6 +64,7 @@ class MicrosoftSite(BaseSite):
         super().__init__(driver)
         self.wait = WebDriverWait(driver, wait_timeout)
         self.selectors = Selectors()
+        self.login_required = False
 
     @contextmanager
     def handle_tab(self):
@@ -75,6 +76,9 @@ class MicrosoftSite(BaseSite):
 
     def linkedin_login(self) -> None:
         """Handle LinkedIn login process"""
+        if not self.driver.get_cookies():
+            self.add_cookies()
+
         if self.is_logged_in():
             return
 
@@ -109,16 +113,18 @@ class MicrosoftSite(BaseSite):
             if authorize:
                 self._safe_click(authorize)
 
+            if self.is_logged_in():
+                self.save_cookies()
+
         except Exception as e:
             logger.error(f"LinkedIn login failed: {str(e)}")
 
     def login(self) -> None:
         try:
-            self.login()
+            self.linkedin_login()
+
         except Exception as e:
-            logger.error(
-                f"Failed to log in with LinkedIn: {str(e)}"
-            )
+            logger.error(f"Failed to log in with LinkedIn: {str(e)}")
 
     def _handle_questions(self, form_element) -> None:
         """Handle application form questions"""
@@ -140,9 +146,9 @@ class MicrosoftSite(BaseSite):
             elif textarea := row.find_elements(
                 By.TAG_NAME, self.selectors.APPLICATION["questions"]["textarea"]
             ):
-                answer = self.get_answer(question)
+                answer = self.get_answers([{"question": question, "type": "text"}])
                 if answer:
-                    textarea[0].send_keys(answer.get("text", "Yes I do"))
+                    textarea[0].send_keys(answer.get("answers", ["yes i do"])[0])
             elif checkbox := row.find_elements(
                 By.CSS_SELECTOR, self.selectors.APPLICATION["questions"]["checkbox"]
             ):
@@ -183,7 +189,11 @@ class MicrosoftSite(BaseSite):
             return
         while page < 21:
             self.driver.get(f"{base_url}{params}&pg={page}")
+            self.wait_for_page_load()
 
+            job = self._get_element(
+                By.CSS_SELECTOR, self.selectors.JOB_SEARCH["list_item"], timeout=10
+            )
             jobs = self._get_elements(
                 By.CSS_SELECTOR, self.selectors.JOB_SEARCH["list_item"]
             )
@@ -352,26 +362,31 @@ class MicrosoftSite(BaseSite):
                                 if select_elements:
                                     options = div.find_elements(By.TAG_NAME, "option")
                                     clean_options = [
-                                        {
-                                            "text": opt.text,
-                                            "value": opt.get_attribute("value"),
-                                        }
+                                        opt.get_attribute("value")
                                         for opt in options
                                         if opt.get_attribute("value")
                                     ]
-                                    answer = self.get_answer(question, clean_options)
+                                    answer = self.get_answers(
+                                        [
+                                            {
+                                                "question": question,
+                                                "type": "options",
+                                                "options": clean_options,
+                                            }
+                                        ],
+                                    )
                                     if answer:
                                         Select(select_elements[0]).select_by_value(
-                                            answer.get(
-                                                "value", answer.get("text", "Yes")
-                                            )
+                                            answer.get("answers", ["yes"])[0]
                                         )
 
                                 elif text_areas:
-                                    answer = self.get_answer(question)
+                                    answer = self.get_answers(
+                                        [{"question": question, "type": "text"}]
+                                    )
                                     if answer:
                                         text_areas[0].send_keys(
-                                            answer.get("text", "Yes I do")
+                                            answer.get("answers", ["Yes I do"])[0]
                                         )
 
                                 elif checkboxes:
@@ -438,9 +453,7 @@ class MicrosoftSite(BaseSite):
 
             # Take screenshot of completed application
             try:
-                self.driver.get_full_page_screenshot_as_file(
-                    f"screenshots/{job_id}.png"
-                )
+                self.save_screenshot(job_id)
             except Exception as e:
                 logger.error(f"Error taking screenshot: {str(e)}")
 
