@@ -88,6 +88,12 @@ class LinkedInSite(BaseSite):
                         By.XPATH, self.selectors.LOGIN["submit"]
                     ):
                         self._safe_click(submit_btn)
+                while (
+                    "resend" in self.driver.page_source.lower()
+                    or "security check" in self.driver.page_source.lower()
+                ):
+                    logger.info("Waiting for LinkedIn to authorize...")
+                    time.sleep(5)
 
             # Verify login success
             if nav_bar := self._get_element(By.ID, self.selectors.PROFILE["nav_menu"]):
@@ -103,7 +109,8 @@ class LinkedInSite(BaseSite):
         """Check if user is currently logged in"""
         try:
             return bool(
-                self._get_element(By.ID, self.selectors.PROFILE["nav_menu"], 5),
+                self._get_element(
+                    By.ID, self.selectors.PROFILE["nav_menu"], 5),
             )
         except Exception:
             return False
@@ -231,15 +238,18 @@ class LinkedInSite(BaseSite):
                 question = section._get_element(By.TAG_NAME, "label").text
             except NoSuchElementException as e:
                 question = (
-                    section._get_element(By.XPATH, "./preceding-sibling::*[2]").text
-                    + section._get_element(By.XPATH, "./preceding-sibling::*[1]").text
+                    section._get_element(
+                        By.XPATH, "./preceding-sibling::*[2]").text
+                    + section._get_element(By.XPATH,
+                                           "./preceding-sibling::*[1]").text
                 )
             if fieldsets := section._get_elements(By.TAG_NAME, "fieldset"):
                 try:
                     question = section._get_element(By.TAG_NAME, "legend").text
                 except NoSuchElementException as e:
                     question = (
-                        section._get_element(By.XPATH, "./preceding-sibling::*[2]").text
+                        section._get_element(
+                            By.XPATH, "./preceding-sibling::*[2]").text
                         + section._get_element(
                             By.XPATH, "./preceding-sibling::*[1]"
                         ).text
@@ -314,7 +324,8 @@ class LinkedInSite(BaseSite):
                 )
                 return True
             except Exception as e2:
-                logger.error(f"Fallback for autocomplete input failed: {str(e2)}")
+                logger.error(
+                    f"Fallback for autocomplete input failed: {str(e2)}")
                 return False
 
     def _handle_input_field(self, input_field: WebElementMod, question: str) -> bool:
@@ -357,7 +368,8 @@ class LinkedInSite(BaseSite):
                             "autocomplete"
                         ]
                     ):
-                        self._handle_autocomplete_input(input_field, answer_text)
+                        self._handle_autocomplete_input(
+                            input_field, answer_text)
                     else:
                         input_field.send_keys(answer_text)
                 if error := self._get_element(
@@ -425,7 +437,8 @@ class LinkedInSite(BaseSite):
             ]
             if not self.response_data:
                 self.questions.append(
-                    {"question": question, "type": "options", "options": clean_options}
+                    {"question": question, "type": "options",
+                        "options": clean_options}
                 )
                 for value in [
                     "Yes",
@@ -467,14 +480,16 @@ class LinkedInSite(BaseSite):
 
             if not self.response_data:
                 self.questions.append(
-                    {"question": question, "type": "options", "options": clean_options}
+                    {"question": question, "type": "options",
+                        "options": clean_options}
                 )
                 for option in options:
                     try:
                         option["component"].click()
                         return True
                     except Exception as e4:
-                        logger.error(f"Error handling fieldset field: {str(e4)}")
+                        logger.error(
+                            f"Error handling fieldset field: {str(e4)}")
                     return True
 
             answer_text = metadata.get(question.replace("\n", "").lower(), "")
